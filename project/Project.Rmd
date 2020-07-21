@@ -1,0 +1,324 @@
+---
+title: "STAT542 Final Project"
+output: html_document
+---
+
+Group Members: Jingyi Meng, Boyuan Wang, Yifan Shi
+netid: jingyim, boyuanw3, yifans16
+
+```{r}
+# utils
+library(usmap)
+library(ggplot2)
+df <- read.csv("county_data_apr22.csv", header=T)
+id = sort(df[,2])
+
+pred <- read.csv("usafacts_infections.csv",header = T)
+pred = pred[which(pred[,1]%in%id),]
+true_y = cbind(pred[,1],pred[,94:100],pred[,200:206])
+write.table(true_y, "cases-deaths-23-29.csv", row.names=F, sep=",")
+
+info_dat = df[,3:88]
+covid_dat = df[,89:(ncol(df)-4)]
+
+# imputation
+library(VIM)
+info_dat <- kNN(info_dat, k=10, imp_var=F)
+which(apply(info_dat[,-(1:12)], 2, sd)==0)
+info_dat = info_dat[,-which(names(info_dat) %in% c("federal.guidelines", "foreign.travel.ban"))]
+```
+
+----------
+Clustering
+----------
+
+```{r}
+# K Means
+library(ggplot2)
+library(usmap)
+#clus1 = kmeans(log1p(covid_dat[,1:92]), centers=4, iter.max=1e4, nstart=10) #cases
+clus1 = kmeans(log1p(covid_dat[,93:184]), centers=4, iter.max=1e4, nstart=10) #deaths
+us_covid = as.data.frame(cbind(df[,11], df[,10], df[,2], clus1$cluster, df[,1]))
+colnames(us_covid) = c("lon", "lat", "countyFIPS", "cluster", "group")
+us_covid = usmap_transform(us_covid)
+plot_usmap(regions="counties", color="grey") + 
+  geom_point(data=us_covid, aes(x=lon.1, y=lat.1, group=group, color=factor(cluster)), 
+             shape=18, size=2) + theme(legend.position="none")
+```
+
+
+```{r}
+# Hierarchical
+library(cluster)
+part1 = info_dat[,13:84]
+
+dem_dat = part1[,c(1:10,23:50)]
+health_dat = part1[,c(11:16, 51:62)]
+resource_dat = part1[,c(17:21,69:72)]
+social_dat = part1[,c(63:68)]
+
+#### demographics data
+hcfit1 <- hclust(dist(scale(dem_dat)), method = "complete")
+par(mar=c(2, 2, 2, 1))
+plot(hcfit1, hang = -1, main = "Cluster dendrogram for demographics data")
+
+fusion1 = hcfit1$height
+n = nrow(dem_dat)
+clusters = (n-1):1
+plot(clusters[3100:3141], fusion1[3100:3141], type = "b", main = "Scree plot for demographics data")
+
+
+fourclust1 = cutree(hcfit1,k = 4)
+
+us_covid_h = as.data.frame(cbind(df[,11], df[,10], df[,2], fourclust1, df[,1]))
+colnames(us_covid_h) = c("lon", "lat", "countyFIPS", "cluster", "group")
+us_covid_h = usmap_transform(us_covid_h)
+plot_usmap(regions="counties", color="grey") + 
+  geom_point(data=us_covid_h, aes(x=lon.1, y=lat.1, group=group, color=factor(fourclust1)), 
+             shape=18, size=2) + theme(legend.position="none")
+```
+
+```{r}
+# tables correspond to collaborator's questions
+df$deathrate = df$tot_deaths/df$PopulationEstimate2018*100000
+names(df)
+
+df$old = df$PopMale60.642010+df$PopFmle60.642010+df$PopFmle65.742010+df$PopMale65.742010+df$PopMale75.842010+df$PopFmle75.842010
+
+for (i in 1:4){
+  print(c("cluster means for cluster",i))
+  cluster = df[fourclust1==i,]
+  names(df)
+  ca_dth = cluster[,c(275:276)]
+  print(colMeans(ca_dth))
+}
+
+names(df)
+
+for (i in 1:4){
+  print(c("cluster means for cluster",i))
+  c1 = df[,c(275:278)]
+  c2 = dem_dat[,c(1:3,6,36)]
+  c3 = cbind(c1,c2)
+  c4 = c3[fourclust1==i,]
+
+  print(colMeans(c4))
+  print(colMeans(c1[,1:2][fourclust1==i,]))
+  print(colMeans(df[,278:279][fourclust1==i,]))
+}
+names(dem_dat)
+
+df$young = df$PopFmle20.242010+df$PopFmle25.292010+df$PopFmle30.342010+df$PopFmle35.442010+df$PopMale20.242010+df$PopMale25.292010+df$PopMale30.342010+df$PopMale35.442010
+names(df)
+```
+
+```{r}
+# SOM
+library(kohonen)
+
+# health outomes
+#clus3 = som(as.matrix(cbind(scale(info_dat[,23:27]), log1p(covid_dat[,93:184]))), somgrid(xdim=2, ydim=2))
+#new_data = data.frame(scale(info_dat[,23:27]), death=log1p(covid_dat[,184]), cluster=clus3[["unit.classif"]])
+
+# hospital resources
+clus3 = som(as.matrix(cbind(scale(info_dat[,81:84]), log1p(covid_dat[,93:184]))), somgrid(xdim=2, ydim=2))
+new_data = data.frame(scale(info_dat[,81:84]), death=scale(covid_dat[,184]), 
+                      cluster=clus3[["unit.classif"]])
+
+new_dat = aggregate(.~cluster, new_data, mean)
+# diabetes
+plot(new_dat$cluster, new_dat$death, col="orange", pch=20, ylim=c(-1,6), xaxt="n", 
+     xlab="Cluster Label", ylab="")
+axis(1, at=seq(1,4,by=1), las=1)
+points(new_dat$X3.YrDiabetes2015.17, col="skyblue", pch=18)
+legend("topleft",c("Mean Diabetes", "Mean Log Death"), col=c("skyblue", "orange"), pch=c(18, 20))
+# hpsa shortage
+plot(new_dat$cluster, new_dat$death, col="orange", pch=20, ylim=c(-1,4), xaxt="n",
+     xlab="Cluster Label", ylab="")
+axis(1, at=seq(1,4,by=1), las=1)
+points(new_dat$HPSAShortage, col="skyblue", pch=18)
+legend("topright",c("Mean HPSA Shortage", "Mean Log Death"), col=c("skyblue", "orange"), pch=c(18, 20))
+```
+
+--------------
+Classification
+--------------
+
+```{r}
+info_dat$death.rate = covid_dat$tot_deaths/info_dat$PopulationEstimate2018*1e5
+info_dat$death.rate = as.factor(ifelse(info_dat$death.rate>1,1,0))
+trn_idx = sample(1:3141, 2500, replace=F)
+info_trn = info_dat[trn_idx,]
+info_tst = info_dat[-trn_idx,]
+```
+
+```{r}
+# SVM
+library(e1071)
+cost = c(seq(1,9,by=1), seq(10,90,by=10), seq(100,1000,by=100))
+folds <- rep_len(1:10,2500)
+acc1 = matrix(NA, length(cost), 10)
+for (i in 1:length(cost)){
+  for (j in 1:10){
+    val_idx = which(folds==j)
+    info_est = info_trn[-val_idx,]
+    info_val = info_trn[val_idx,]
+    class1 = svm(death.rate~., data=info_est, type='C-classification', 
+                  kernel = 'radial', scale=T, cost=cost[i])
+    pred_c1 = predict(class1, info_val)
+    acc1[i,j] = mean(pred_c1==info_val$death.rate)
+  }
+}
+cost[which.max(apply(acc1, 1, mean))] # tuning result
+class1 = svm(death.rate~., data=info_trn, type='C-classification', 
+             kernel = 'radial', scale=T, cost=30)
+pred_c1 = predict(class1, info_tst)
+mean(pred_c1==info_tst$death.rate)
+table(pred_value=pred_c1, true_value=info_tst$death.rate)
+
+# plot in appendix
+plot(cost, apply(acc1, 1, mean), xlab="Cost", ylab="Accuracy", pch=20)
+abline(v=all_k[which.max(apply(acc1, 1, mean))], col="red", lwd=1.5)
+```
+
+```{r}
+# kNN
+library(caret)
+all_k = c(1:3, seq(5,60,by=5))
+acc2 = matrix(NA, length(all_k), 10)
+for (i in 1:length(all_k)){
+  for (j in 1:10){
+    val_idx = which(folds==j)
+    info_est = info_trn[-val_idx,]
+    info_val = info_trn[val_idx,]
+    class2 = knn3(death.rate~., data=info_est, k=all_k[i])
+    pred_c2 = predict(class2, info_val, type="class")
+    acc2[i,j] = mean(pred_c2==info_val$death.rate)
+  }
+}
+all_k[which.max(apply(acc2, 1, mean))] # tuning result
+class2 = knn3(death.rate~., data=info_trn, k=30)
+pred_c2 = predict(class2, info_tst, type="class")
+mean(pred_c2==info_tst$death.rate)
+table(pred_value=pred_c2, true_value=info_tst$death.rate)
+
+# plot in appendix
+plot(all_k, apply(acc2, 1, mean), xlab="k", ylab="Accuracy", pch=20)
+abline(v=all_k[which.max(apply(acc2, 1, mean))], col="red", lwd=1.5)
+```
+
+----------
+Regression
+----------
+
+```{r}
+#load in data
+library(dplyr)
+data_read = read.csv("county_data_apr22.csv")
+data_read_2 = read.csv("cases-deaths-23-29.csv")
+data = left_join(data_read, data_read_2[-c(2:8)], by = c("countyFIPS"="pred"))
+#split data
+trn_1 = matrix(data[, 265]-data[, 264], nrow = nrow(data))
+for (i in 266:272){
+  trn_1 = cbind(trn_1, data[, i]-data[, i-1])
+}
+trn_1 = as.data.frame(trn_1)
+#data[, 277:283]
+trn_2 = matrix(data[, 277]-data[, 272], nrow = nrow(data))
+for (i in 278:283) {
+  trn_2 = cbind(trn_2, data[, i]-data[, i-1])
+}
+trn_2 = as.data.frame(trn_2)
+```
+
+```{r}
+rmse = function(x, y){
+  sqrt(mean((x-y)^2))
+}
+```
+
+```{r}
+#lm1
+library(caret)
+tr = trainControl(method = "cv", number = 10)
+mod_1 = train(V8~., data = trn_1, method = "lm", trControl = tr, metric = "RMSE")
+tst = trn_1[, 2:8]
+colnames(tst) = c("V1", "V2", "V3", "V4", "V5", "V6", "V7")
+result_1 = predict(mod_1, tst)
+rmse(result_1, trn_2[, 1])
+#lm for the rest
+d = 6
+result = matrix(NA, nrow = nrow(trn_1), ncol = 7)
+result[ , 1] = result_1
+lm_rmse = rep(0, d-1)
+for (i in 1:d){
+  temp = cbind(trn_1[, (1+i):8], result[, 1:i])
+  colnames(temp) = c("V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8")
+  tst = temp[, 2:8]
+  colnames(tst) = c("V1", "V2", "V3", "V4", "V5", "V6", "V7")
+  mod = train(V8~., data = temp, method = "lm", trControl = tr, metric = "RMSE")
+  result[, i+1] = predict(mod, tst)
+  
+  lm_rmse[i] = rmse(result[, i+1], trn_2[, i+1])
+}
+lm_rmse
+```
+
+```{r}
+#rf1
+library(caret)
+tr = trainControl(method = "cv", number = 10)
+tg = expand.grid(mtry = c(1:3))
+mod_1 = train(V8~., data = trn_1, method = "rf", 
+              trControl = tr, tuneGrid = tg, metric = "RMSE")
+tst = trn_1[, 2:8]
+colnames(tst) = c("V1", "V2", "V3", "V4", "V5", "V6", "V7")
+result_1 = predict(mod_1, tst)
+rmse(result_1, trn_2[, 1])
+#rf for the rest
+d = 6
+result = matrix(NA, nrow = nrow(trn_1), ncol = 7)
+result[ , 1] = result_1
+rf_rmse = rep(0, d-1)
+for (i in 1:d){
+  temp = cbind(trn_1[, (1+i):8], result[, 1:i])
+  colnames(temp) = c("V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8")
+  tst = temp[, 2:8]
+  colnames(tst) = c("V1", "V2", "V3", "V4", "V5", "V6", "V7")
+  mod = train(V8~., data = temp, method = "rf", trControl = tr, tuneGrid = tg, metric = "RMSE")
+  result[, i+1] = predict(mod, tst)
+  #result_tst = predict(mod, tst)
+  rf_rmse[i] = rmse(result[, i+1], trn_2[, i+1])
+}
+rf_rmse
+```
+
+```{r}
+#svm 1
+library(caret)
+library(LiblineaR)
+tr = trainControl(method = "cv", number = 10)
+tg = expand.grid(C = seq(1, 2, length = 11))
+mod_1 = train(V8~., data = trn_1, method = "svmLinear", 
+              trControl = tr, tuneGrid = tg, metric = "RMSE")
+tst = trn_1[, 2:8]
+colnames(tst) = c("V1", "V2", "V3", "V4", "V5", "V6", "V7")
+result_1 = predict(mod_1, tst)
+rmse(result_1, trn_2[, 1])
+#svm for the rest
+d = 6
+result = matrix(NA, nrow = nrow(trn_1), ncol = 7)
+result[ , 1] = result_1
+svm_rmse = rep(0, d-1)
+for (i in 1:d){
+  temp = cbind(trn_1[, (1+i):8], result[, 1:i])
+  colnames(temp) = c("V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8")
+  tst = temp[, 2:8]
+  colnames(tst) = c("V1", "V2", "V3", "V4", "V5", "V6", "V7")
+  mod = train(V8~., data = temp, method = "svmLinear", trControl = tr, tuneGrid = tg, metric = "RMSE")
+  result[, i+1] = predict(mod, tst)
+  #result_tst = predict(mod, tst)
+  svm_rmse[i] = rmse(result[, i+1], trn_2[, i+1])
+}
+svm_rmse
+```
