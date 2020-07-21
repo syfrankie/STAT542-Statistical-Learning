@@ -1,0 +1,290 @@
+---
+title: 'STAT 542: Homework 2'
+author: "Spring 2020, by Yifan Shi (yifans16)"
+date: 'Due: Monday, Feb 17 by 11:59 PM'
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+---
+
+```{r setup, include=FALSE}
+  knitr::opts_chunk$set(include = TRUE)  # TRUE for solution; FALSE for questions set
+  knitr::opts_chunk$set(echo = TRUE)
+  knitr::opts_chunk$set(message = FALSE)
+  knitr::opts_chunk$set(warning = FALSE)
+  # knitr::opts_chunk$set(fig.height = 6, fig.width = 8, out.width = '50%', fig.align = "center")
+  options(width = 90)
+```
+
+```{css, echo=FALSE}
+.solution {
+background-color: #e6ffe6;
+}
+```
+
+## Question 1 [30 Points] Linear Model Selection
+
+We will use the Boston Housing data for this question. The data is contained in the `mlbench` package. If you do not use R, you can download a `.csv` file from the course website.  We will remove variables `medv`, `town` and `tract` from the data and use `cmedv` as the outcome. First, you need to standardize all variables marginally (only the covariates, not the outcome) to mean 0 and sample variation 1. Answer the following questions by performing linear regression and model selection.
+
+### a. [5 Points] 
+
+Perform a linear regression and obtain the ordinary least square estimators and their variances.
+
+###Answer:
+
+```{r}
+library(mlbench)
+library(tidyverse)
+data("BostonHousing2")
+df <- BostonHousing2 %>% 
+  select(-c(medv,town,tract))
+df$chas <- as.numeric(df$chas)
+df <- as.matrix(df)
+xbar <- apply(df[,-3],2,mean)
+Sx <- apply(df[,-3],2,sd)
+ones <- matrix(1,506,1)
+df[,-3] <- (df[,-3]-ones%*%xbar)/(ones%*%Sx)
+```
+
+The ols estimators are:
+
+```{r}
+m1a <- lm(cmedv~.,data=as.data.frame(df))
+m1a$coefficients
+```
+
+The variances of ols estimators are:
+
+```{r}
+(summary(m1a)$coefficients[,2])^2
+```
+
+
+### b. [5 Points] 
+
+Starting from the full model, use stepwise regression with backward and BIC criterion to select the best model. Which variables are removed from the full model?
+
+###Answer:
+
+```{r}
+m1b <- step(m1a,direction = "backward",trace=0,k=log(nrow(df)))
+summary(m1b)
+```
+
+`lon`, `lat`, `indus` and `age` are removed.
+
+### c. [5 Points] 
+
+Starting from this full model, use the best subset selection and list the best model of each model size.
+
+###Answer:
+
+```{r}
+library(leaps)
+library(knitr)
+RSSleaps=regsubsets(df[,-3],df[,3], nvmax=15)
+sumleaps <- summary(RSSleaps,matrix=T)
+sumleaps.df <- as.data.frame(sumleaps$which)
+sumleaps.df
+```
+
+### d. [5 Points]
+
+Use the BIC criterion to select the best model from part c). Which variables are removed from the full model?
+
+###Answer:
+
+```{r}
+sumleaps$which[which.min(sumleaps$bic),]
+```
+
+`lon`, `lat`, `indus` and `age` are removed.
+
+### e. [10 Points] 
+
+Our solution is obtained based on the scaled $X$. Can you recover the original OLS estimates based on the original data? For this question, you can use information from the original design matrix. However, you cannot refit the linear regression. Provide a rigorous mathematical derivation and also validate that by comparing it to the `lm()` function on the original data.
+
+###Answer:
+
+Since the response variable $Y$ is not standardized, the estimated response $\hat{Y}$ should remain the same in both standardized and unstandardized linear models.
+
+$$ \hat{Y} = \hat{\beta_0} + \sum_{i=1}^k \hat{\beta_i} \frac{x_i-\bar{x_i}}{Sx_i} $$
+
+where $\bar{x_i}$ and $Sx_i$ are the column mean and standard deviation of the predictors.
+
+After rearranging, the equation can be written as:
+
+$$ \hat{Y} = \hat{\beta_0} - \sum_{i=1}^k \frac{\hat{\beta_i}\ \bar{x_i}}{Sx_i} + \sum_{i=1}^k \frac{\hat{\beta_i}}{Sx_i}x_i $$
+
+while $$ \hat{\beta_0} - \sum_{i=1}^k \frac{\hat{\beta_i}\ \bar{x_i}}{Sx_i} $$ is the intercept and $$ \frac{\hat{\beta_i}}{Sx_i} $$ are the coefficients in the unstandardized model.
+
+```{r}
+df2 <- BostonHousing2 %>% 
+  select(-c(medv,town,tract))
+df2$chas <- as.numeric(df2$chas)
+m1e <- lm(cmedv~.,data=df2)
+
+intercept <- m1a$coefficients[1] - sum(m1a$coefficients[2:16]*xbar/Sx)
+coefficient <- m1a$coefficients[2:16]/Sx
+recovered <- c(intercept,coefficient)
+rm(intercept,coefficient)
+original <- m1e$coefficients
+kable(cbind(original,recovered))
+```
+
+## Question 2 [70 Points] Ridge Regression and Scaling Issues
+
+For this question, you can __ONLY__ use the base package. We will use the dataset from Question 1 a). However, you should further standardize the outcome variable `cmedv` to mean 0 and sample variance 1. Hence, no intercept term is needed when you fit the model. 
+
+### a. [30 points] 
+
+First, fit a ridge regression with your own code, with the objective function $||\mathbf{y} - \mathbf{X}\boldsymbol \beta ||^2 + \lambda ||\boldsymbol\beta||^2$.
+    * You should consider a grid of 100 penalty $\lambda$ values. Your choice of lambda grid can be flexible. However, they should be appropriate for the scale of the objective function. 
+    * Calculate the degrees of freedom and the leave-one-out cross-validation (computationally efficient version) based on your choice of the penalty.
+    * Report details of your model fitting result. In particular, you should produce a plot similar to page 25 in the lecture note `Penalized`
+
+###Answer:
+
+```{r}
+X <- df[,-3]
+Y <- df[,3]
+Y <- (Y-mean(Y))/sd(Y)
+lambda <- seq(0,49.5,by=0.5)
+coef <- matrix(NA,length(lambda),ncol(X))
+dof <- rep(NA,length(lambda))
+CV <- rep(NA,length(lambda))
+for (i in 1:length(lambda)){
+  div <- solve(t(X)%*%X+diag(lambda[i],ncol(X),ncol(X)))
+  coef[i,] = div%*%t(X)%*%Y
+  dof[i] = sum(diag(X%*%div%*%t(X)))
+  CV[i] = sum(((Y-X%*%coef[i,])/(1-diag(X%*%div%*%t(X))))^2)
+}
+```
+
+```{r,fig.height=5,fig.width=6,fig.align="center"}
+par(mar=c(5,5,3,7),xpd=T)
+plot(dof,coef[,1],type="l",col=1,lty=1,ylim=range(-0.5,0.4),ylab="coefficients")
+for (j in 2:15){
+  lines(dof,coef[,j],type="l",col=j,lty=j)
+}
+legend("topright",inset=c(-.35,0),c(colnames(X)),col=c(1:15),lty=c(1:15))
+```
+
+The $\lambda$ gives the smallest LOOCV is: 
+
+```{r}
+lambda[which.min(CV)]
+```
+
+### b. [25 points]
+
+Following the setting of part a), with $\lambda = 10$, recover the original solution based on the unstandardized data (with intercept). Again, you cannot refit the model on the original data. Provide a rigorous mathematical derivation. In this case, is your solution the same as a ridge model (with your previous code) fitted on the original data? Make sure that you check the model fitting results from either model. What is the difference? Please list all possible reasons that may cause this difference.
+
+###Answer:
+
+According to the relation that 
+$$ \hat{Y}_{stan} = \frac{\hat{Y}_{unstan}\ -\bar{Y}}{Sy} $$
+and
+$$ \hat{Y}_{stan} = \sum_{i=1}^k \hat{\beta_i} \frac{x_i-\bar{x_i}}{Sx_i} $$
+we can get
+$$ \hat{Y}_{unstan} = \bar{Y}+\sum_{i=1}^k Sy\hat{\beta_i} \frac{x_i-\bar{x_i}}{Sx_i} $$
+where $\bar{Y}$ and $Sy$ are the mean and standard deviation of the unstandardized response.
+
+After rearranging, the equation can be written as:
+
+$$ \hat{Y}_{unstan} = \bar{Y} - \sum_{i=1}^k \frac{Sy}{Sx_i}\hat{\beta_i}\bar{x_i} + \sum_{i=1}^k \frac{Sy}{Sx_i}\hat{\beta_i}x_i $$
+
+while $$ \bar{Y} - \sum_{i=1}^k \frac{Sy}{Sx_i}\hat{\beta_i}\bar{x_i} $$ is the intercept and $$ \frac{Sy}{Sx_i}\hat{\beta_i} $$ are the coefficients in the recovered model.
+
+
+```{r}
+#undtandardized y_hat from unstandardized x
+X_u <- as.matrix(df2[,-3])
+div_u <- solve(t(X_u)%*%X_u+diag(10,ncol(X_u),ncol(X_u)))
+yhat_u1 <- as.vector(X_u%*%div_u%*%t(X_u)%*%df[,3])
+
+#undtandardized y_hat from standardized beta_hat
+div_s <- solve(t(X)%*%X+diag(10,ncol(X),ncol(X)))
+coef_s <- div_s%*%t(X)%*%Y
+ybar <- matrix(mean(df[,3]),nrow(df),1)
+beta1_u <- coef_s/Sx*sd(df[,3])
+beta0_u <- ybar - ones%*%(xbar/Sx)%*%coef_s * sd(df[,3])
+yhat_u2 <- as.vector(beta0_u + X_u%*%beta1_u)
+difference <- yhat_u1-yhat_u2
+rm(X_u,div_u)
+kable(head(cbind(yhat_u1,yhat_u2,difference)))
+```
+
+The reason that causes this difference might be the shrinkage of intercept.
+
+### c. [15 points] 
+
+A researcher is interested in only penalizing a subset of the variables, and leave the rest of them unpenalized. In particular, the categorical variables `zn`, `chas`, `rad` should not be penalized. You should use the data in part 2), which does not concern the intercept. Following the derivation during our lecture:
+    * Write down the objective function of this new model
+    * Derive the theoretical solution of this model and implement it with $\lambda = 10$
+    * Check your model fitting results and report the residual sum of squares
+
+###Answer:
+
+The objective function is: 
+$F = (Y-X_1\beta_1-X_2\beta_2)^T(Y-X_1\beta_1-X_2\beta_2)+\lambda\beta_1^T\beta_1$
+
+In order to find the minimum, we need to take partial derivatives based on $\beta_1$ and $\beta_2$ :
+\[
+\begin{aligned}
+\frac{\partial F}{\partial \beta_1} = -X_1^T(Y-X_1\beta_1-X_2\beta_2)+\lambda\beta_1 \\  
+= -X_1^TY+X_1^TX_1\beta_1+X_1^TX_2\beta_2+\lambda\beta_1
+\end{aligned}
+\]
+
+\[
+\begin{aligned}
+\frac{\partial F}{\partial \beta_2} = -X_2^T(Y-X_1\beta_1-X_2\beta_2) \\ 
+= -X_2^TY+X_2^TX_1\beta_1+X_2^TX_2\beta_2
+\end{aligned}
+\]
+
+Then set these partial derivatives to be zero, we will get the estimated parameters:
+
+
+\[
+\hat{\beta_2} = (X_2^TX_2)^{-1}(X_2^TY-X_2^TX_1\hat{\beta_1})
+\]
+
+\[
+\begin{aligned}
+\hat{\beta_1} = (X_1^TX_1-\lambda I)^{-1}(X_1^TY-X_1^TX_2\hat{\beta_2}) \\ 
+= (X_1^TX_1-\lambda I)^{-1}(X_1^TY-X_1^TX_2(X_2^TX_2)^{-1}(X_2^TY-X_2^TX_1\hat{\beta_1}) \\ 
+= (X_1^TX_1-\lambda I)^{-1}X_1^TY - (X_1^TX_1-\lambda I)^{-1}X_1^TX_2(X_2^TX_2)^{-1}X_2^TY \\ 
++ (X_1^TX_1-\lambda I)^{-1}X_1^TX_2(X_2^TX_2)^{-1}X_2^TX_1\hat{\beta_1} \\ 
+= [I-(X_1^TX_1-\lambda I)^{-1}X_1^TX_2(X_2^TX_2)^{-1}X_2^TX_1]^{-1} \\ 
+*[(X_1^TX_1-\lambda I)^{-1}X_1^TY - (X_1^TX_1-\lambda I)^{-1}X_1^TX_2(X_2^TX_2)^{-1}X_2^TY] 
+\end{aligned}
+\]
+
+The model fitting results:
+
+```{r}
+x1 <- X[,-c(4,6,11)]
+x2 <- X[,c(4,6,11)]
+p1 <- ncol(x1)
+p2 <- ncol(x2)
+beta1hat <- solve(diag(p1)-solve(t(x1)%*%x1-diag(10,p1,p1))%*%
+                    t(x1)%*%x2%*%solve(t(x2)%*%x2)%*%t(x2)%*%
+                    x1)%*%(solve(t(x1)%*%x1-diag(10,p1,p1))%*%
+                    t(x1)%*%Y-solve(t(x1)%*%x1-diag(10,p1,p1))%*%
+                    t(x1)%*%x2%*%solve(t(x2)%*%x2)%*%t(x2)%*%Y)
+beta2hat <- solve(t(x2)%*%x2)%*%(t(x2)%*%Y-t(x2)%*%x1%*%beta1hat)
+head(x1%*%beta1hat+x2%*%beta2hat)
+```
+
+The RSS of this model is:
+
+```{r}
+sum((Y-x1%*%beta1hat-x2%*%beta2hat)^2)
+```
